@@ -110,7 +110,7 @@ def process_and_classify_batch(image_paths, ground_truth_labels):
 
 # Example usage with specified image paths
 image_paths = [
-    r"C:\Users\dunke\Pictures\Screenshots\Screenshot 2024-11-06 190656.png"
+    r"//Enter path here"
 ]  # Add more paths as needed
 
 # Sample ground truth labels: 1 for "Good," 0 for "Bad" (replace with actual labels)
