@@ -1,0 +1,25 @@
+Preprocessing:
+
+Complete removal of CLAHE. Switched to histogram equalization.
+
+Changed from Gaussian blur to bilateral filter.
+
+Detection Method Changes:
+
+Removed adaptive thresholding completely - threw off our detection methodology. 
+Removed morphological operations (for the time being, as they still do have benefits in isolating squares in the sample images. Will need tuning.)
+
+Square Criteria / Evaluation changes:
+
+Made certain thresholds like the aspect ratio less strict. 
+Removed many over-complicated methodologies: 
+	Removed extent check
+	Removed rotated rectangle code - was messy and didn't work properly.
+
+
+Overall Structure:
+
+	Simplified approach. Focusing now on basic thresholding rather than multiple methods, and to further build on from there - as we are now getting promising results. The next update will re-integrate complexity.
+
+Only one pass per threshold value, no more multiple types.
+Now focuses on solidity (shape quality) rather than extent (filled area)

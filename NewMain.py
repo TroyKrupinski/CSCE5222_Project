@@ -1,290 +1,213 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from sklearn.svm import SVC
-from sklearn.model_selection import train_test_split
 
 def load_and_preprocess_image(image_path):
     """
-    Load and preprocess an image
+    Load and preprocess image with focus on clean square edges
     """
-    image = cv2.imread(image_path)
+    if isinstance(image_path, str):
+        image = cv2.imread(image_path)
+    else:
+        image = image_path
+        
     if image is None:
-        raise ValueError(f"Could not load image: {image_path}")
+        raise ValueError(f"Could not load image")
     
-    # Convert to grayscale if not already
+    # Convert to grayscale
     if len(image.shape) == 3:
         gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     else:
         gray_image = image.copy()
     
-    # Apply histogram equalization
-    equalized_image = cv2.equalizeHist(gray_image)
+    # Enhance contrast
+    gray_image = cv2.equalizeHist(gray_image)
     
-    # Apply bilateral filter for noise reduction while preserving edges
-    denoised_image = cv2.bilateralFilter(equalized_image, 9, 75, 75)
+    # Apply bilateral filter to reduce noise while preserving edges
+    denoised = cv2.bilateralFilter(gray_image, 9, 75, 75)
     
-    return image, denoised_image
+    return image, denoised
 
-def calculate_iou(pred_box, gt_box):
+def detect_squares(image, min_area=150, max_area=10000, debug=False):
     """
-    Calculate Intersection over Union between prediction and ground truth boxes
-    """
-    x1 = max(pred_box[0], gt_box[0])
-    y1 = max(pred_box[1], gt_box[1])
-    x2 = min(pred_box[0] + pred_box[2], gt_box[0] + gt_box[2])
-    y2 = min(pred_box[1] + pred_box[3], gt_box[1] + gt_box[3])
-    
-    intersection = max(0, x2 - x1) * max(0, y2 - y1)
-    pred_area = pred_box[2] * pred_box[3]
-    gt_area = gt_box[2] * gt_box[3]
-    union = pred_area + gt_area - intersection
-    
-    return intersection / union if union > 0 else 0
-
-def detect_components(image):
-    """
-    Detect individual components in the image using multi-scale detection
+    Detect squares using binary thresholding and contour analysis
     """
     if len(image.shape) == 3:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     else:
         gray = image.copy()
     
-    components = []
-    scales = [1.0, 1.5, 0.5]  # Multiple scales for detection
+    squares = []
+    debug_images = []
     
-    for scale in scales:
-        # Resize image for multi-scale detection
-        width = int(gray.shape[1] * scale)
-        height = int(gray.shape[0] * scale)
-        scaled = cv2.resize(gray, (width, height))
+    # Try different threshold values
+    for thresh_val in [100, 127, 150, 175, 200]:  # Add more threshold values
+        # Binary threshold
+        _, binary = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
+        if debug:
+            debug_images.append((f"Threshold {thresh_val}", binary.copy()))
         
-        # Apply adaptive thresholding
-        thresh = cv2.adaptiveThreshold(scaled, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                     cv2.THRESH_BINARY_INV, 11, 2)
-        
-        # Noise removal
-        kernel = np.ones((3,3), np.uint8)
-        opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
-        
-        # Connected component analysis
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(opening, connectivity=8)
-        
-        # Filter components
-        for i in range(1, num_labels):  # Skip background
-            x = int(stats[i, cv2.CC_STAT_LEFT] / scale)
-            y = int(stats[i, cv2.CC_STAT_TOP] / scale)
-            w = int(stats[i, cv2.CC_STAT_WIDTH] / scale)
-            h = int(stats[i, cv2.CC_STAT_HEIGHT] / scale)
-            area = int(stats[i, cv2.CC_STAT_AREA] / (scale * scale))
+        # Find contours for both normal and inverted image
+        for img in [binary, cv2.bitwise_not(binary)]:
+            contours, _ = cv2.findContours(img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
             
-            # Filter based on area and aspect ratio
-            if area > 500 and 0.2 < w/h < 5:
-                # Create contour from component
-                component_mask = (labels == i).astype(np.uint8) * 255
-                component_mask = cv2.resize(component_mask, (gray.shape[1], gray.shape[0]))
-                contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, 
-                                             cv2.CHAIN_APPROX_SIMPLE)
-                if contours:
-                    components.append((contours[0], (x, y, w, h)))
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if min_area < area < max_area:
+                    peri = cv2.arcLength(contour, True)
+                    approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
+                    
+                    # Check if the shape is approximately square
+                    if len(approx) == 4:
+                        x, y, w, h = cv2.boundingRect(contour)
+                        aspect_ratio = float(w)/h
+                        
+                        # Check if it's square-like
+                        if 0.7 < aspect_ratio < 1.3:
+                            # Calculate the solidity (area / convex hull area)
+                            hull = cv2.convexHull(contour)
+                            hull_area = cv2.contourArea(hull)
+                            solidity = float(area) / hull_area if hull_area > 0 else 0
+                            
+                            if solidity > 0.6:
+                                squares.append({
+                                    'contour': contour,
+                                    'bbox': (x, y, w, h),
+                                    'area': area,
+                                    'aspect_ratio': aspect_ratio,
+                                    'solidity': solidity
+                                })
     
-    return components
+    # Remove overlapping detections
+    filtered_squares = remove_overlapping_squares(squares)
+    
+    if debug:
+        return filtered_squares, debug_images
+    return filtered_squares
 
-def extract_component_features(image, component):
+def remove_overlapping_squares(squares, iou_threshold=0.3):
     """
-    Extract features from a detected component
+    Remove overlapping square detections
     """
-    contour, (x, y, w, h) = component
+    if not squares:
+        return []
     
-    # Ensure coordinates are within image bounds
-    x = max(0, x)
-    y = max(0, y)
-    w = min(w, image.shape[1] - x)
-    h = min(h, image.shape[0] - y)
+    # Sort squares by area
+    squares = sorted(squares, key=lambda x: x['area'], reverse=True)
     
-    if w <= 0 or h <= 0:
-        return None
+    filtered_squares = []
+    while squares:
+        current = squares.pop(0)
+        keep = True
+        
+        i = 0
+        while i < len(squares):
+            if calculate_iou(current['bbox'], squares[i]['bbox']) > iou_threshold:
+                squares.pop(i)
+            else:
+                i += 1
+                
+        if keep:
+            filtered_squares.append(current)
     
-    roi = image[y:y+h, x:x+w]
-    if roi.size == 0:
-        return None
+    return filtered_squares
+
+def calculate_iou(box1, box2):
+    """Calculate Intersection over Union"""
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[0] + box1[2], box2[0] + box2[2])
+    y2 = min(box1[1] + box1[3], box2[1] + box2[3])
     
-    # Calculate shape features
-    area = cv2.contourArea(contour)
-    perimeter = cv2.arcLength(contour, True)
-    circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    box1_area = box1[2] * box1[3]
+    box2_area = box2[2] * box2[3]
+    union = box1_area + box2_area - intersection
     
-    # Convert ROI to grayscale if needed
-    if len(roi.shape) == 3:
-        roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    return intersection / union if union > 0 else 0
+
+def visualize_detections(image_path, debug=False):
+    """
+    Visualize the square detection results
+    """
+    # Load and process image
+    original_image, preprocessed = load_and_preprocess_image(image_path)
+    
+    # Detect squares
+    if debug:
+        squares, debug_images = detect_squares(preprocessed, debug=True)
     else:
-        roi_gray = roi
+        squares = detect_squares(preprocessed)
     
-    # Calculate intensity features
-    mean_intensity = np.mean(roi_gray)
-    std_intensity = np.std(roi_gray)
+    # Create result visualization
+    result_image = original_image.copy()
+    debug_info = []
     
-    # Calculate texture features
-    gx = cv2.Sobel(roi_gray, cv2.CV_64F, 1, 0, ksize=3)
-    gy = cv2.Sobel(roi_gray, cv2.CV_64F, 0, 1, ksize=3)
-    gradient_magnitude = np.sqrt(gx**2 + gy**2)
-    texture_energy = np.mean(gradient_magnitude)
-    
-    # Create feature vector
-    features = np.array([
-        circularity,
-        mean_intensity,
-        std_intensity,
-        texture_energy,
-        w/h,  # aspect ratio
-        area,
-    ])
-    
-    return features
-
-def evaluate_detection(image_paths, labels, test_size=0.2):
-    """
-    Evaluate the detection and classification system using SVM without IoU thresholding.
-    """
-    component_features = []
-    component_labels = []
-    
-    print("Processing images and extracting features...")
-    for idx, image_path in enumerate(image_paths):
-        try:
-            print(f"Processing {image_path}...")
-            image, preprocessed = load_and_preprocess_image(image_path)
-            components = detect_components(preprocessed)
-            
-            for component in components:
-                features = extract_component_features(image, component)
-                if features is not None:
-                    component_features.append(features)
-                    component_labels.append(labels[idx])  # Use provided labels directly
-            
-        except Exception as e:
-            print(f"Error processing {image_path}: {str(e)}")
-            continue
-    
-    if len(component_features) < 2:
-        print("Not enough components detected for evaluation")
-        return None
-    
-    # Convert to numpy arrays
-    X = np.array(component_features)
-    y = np.array(component_labels)
-    
-    # Check for class diversity
-    unique_classes = np.unique(y)
-    if len(unique_classes) < 2:
-        print("Insufficient class diversity for training. Ensure both 'good' and 'bad' components are present.")
-        return None
-    
-    print(f"\nTotal components detected: {len(X)}")
-    print(f"Class distribution: {np.bincount(y)}")
-    
-    try:
-        # Split the data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=42, stratify=y
+    # Draw detections
+    for i, square in enumerate(squares, 1):
+        # Draw contour
+        cv2.drawContours(result_image, [square['contour']], -1, (0, 255, 0), 2)
+        
+        # Add detection info
+        debug_info.append(
+            f"Square {i}: Area={square['area']:.0f}, "
+            f"AR={square['aspect_ratio']:.2f}, "
+            f"Solidity={square['solidity']:.2f}"
         )
+    
+    # Create visualization
+    plt.figure(figsize=(15, 10))
+    
+    plt.subplot(221)
+    plt.imshow(cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB))
+    plt.title('Original Image')
+    plt.axis('off')
+    
+    plt.subplot(222)
+    plt.imshow(preprocessed, cmap='gray')
+    plt.title('Preprocessed Image')
+    plt.axis('off')
+    
+    plt.subplot(223)
+    plt.imshow(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB))
+    plt.title(f'Detected Squares (Total: {len(squares)})')
+    plt.axis('off')
+    
+    plt.subplot(224)
+    plt.text(0.1, 0.5, '\n'.join(debug_info), fontsize=10)
+    plt.axis('off')
+    plt.title('Detection Properties')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    if debug:
+        # Show debug images
+        num_debug = len(debug_images)
+        cols = min(3, num_debug)
+        rows = (num_debug + cols - 1) // cols
+        plt.figure(figsize=(5*cols, 5*rows))
         
-        # Train classifier
-        classifier = SVC(kernel='rbf', probability=True)
-        classifier.fit(X_train, y_train)
-        
-        # Make predictions
-        y_pred = classifier.predict(X_test)
-        
-        # Calculate metrics
-        metrics = {
-            'accuracy': accuracy_score(y_test, y_pred),
-            'precision': precision_score(y_test, y_pred, zero_division=0),
-            'recall': recall_score(y_test, y_pred, zero_division=0),
-            'f1': f1_score(y_test, y_pred, zero_division=0)
-        }
-        
-        print("\nEvaluation Results:")
-        print("-" * 50)
-        for metric, value in metrics.items():
-            print(f"{metric.upper():10s}: {value:.3f}")
-        
-        return metrics
-        
-    except Exception as e:
-        print(f"Error during evaluation: {str(e)}")
-        return None
-
-
-def visualize_results(image_path, save_path=None):
-    """
-    Visualize detection results with debug information
-    """
-    try:
-        image, preprocessed = load_and_preprocess_image(image_path)
-        components = detect_components(preprocessed)
-        
-        # Create debug visualization
-        result_image = image.copy()
-        debug_info = []
-        
-        for i, (contour, (x, y, w, h)) in enumerate(components):
-            # Draw bounding box
-            cv2.rectangle(result_image, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            cv2.drawContours(result_image, [contour], -1, (255, 0, 0), 1)
+        for i, (title, img) in enumerate(debug_images, 1):
+            plt.subplot(rows, cols, i)
+            plt.imshow(img, cmap='gray')
+            plt.title(title)
+            plt.axis('off')
             
-            # Calculate and store component properties
-            area = cv2.contourArea(contour)
-            aspect_ratio = w/h
-            debug_info.append(f"Component {i+1}: Area={area:.0f}, AR={aspect_ratio:.2f}")
-        
-        plt.figure(figsize=(15, 10))
-        
-        plt.subplot(221)
-        plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        plt.title('Original Image')
-        plt.axis('off')
-        
-        plt.subplot(222)
-        plt.imshow(preprocessed, cmap='gray')
-        plt.title('Preprocessed Image')
-        plt.axis('off')
-        
-        plt.subplot(223)
-        plt.imshow(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB))
-        plt.title(f'Detected Components (Total: {len(components)})')
-        plt.axis('off')
-        
-        plt.subplot(224)
-        plt.text(0.1, 0.5, '\n'.join(debug_info), fontsize=10)
-        plt.axis('off')
-        plt.title('Component Properties')
-        
         plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path)
         plt.show()
-        
-    except Exception as e:
-        print(f"Error visualizing {image_path}: {str(e)}")
+    
+    return squares
 
 def main():
-    # Define image paths
-    image_paths = [f"image/NakedTop{i:02d}.jpg" for i in range(1, 21)]
+    image_path = "image/NakedTop01.jpg"  
     
-    # Example labels for each image (1 for "good" and 0 for "bad")
-    # This list should match the ground truth classification based on visual inspection or existing labeled data.
-    labels = [1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1]
-    
-    # Evaluate the system
-    metrics = evaluate_detection(image_paths, labels)
-    
-    # Optionally, visualize results for a few images
-    for i, image_path in enumerate(image_paths[:5]):
-        visualize_results(image_path, f"results_image_{i+1}.png")
+    try:
+        squares = visualize_detections(image_path, debug=True)
+        print(f"Detected {len(squares)} squares in the image")
+        
+    except Exception as e:
+        print(f"Error processing image: {str(e)}")
 
 if __name__ == "__main__":
     main()

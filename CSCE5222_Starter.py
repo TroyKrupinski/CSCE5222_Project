@@ -163,72 +163,47 @@ def process_and_classify_image(image_path, model):
     
     return classification
 
-# Training the Classifier (SVM)
-def train_svm_classifier(training_image_paths, training_labels):
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+
+# Enhanced SVM Training
+def train_svm_with_scaling(training_image_paths, training_labels):
     feature_list = []
     label_list = []
     
     for idx, image_path in enumerate(training_image_paths):
-        # Preprocessing
         preprocessed_image = load_and_preprocess_image(image_path)
         denoised_image = apply_noise_reduction(preprocessed_image)
-        
-        # Square Detection
         squares = detect_squares(denoised_image)
         
         if squares:
             for square in squares:
-                # Create a mask for the square region
                 mask = np.zeros_like(denoised_image)
                 cv2.drawContours(mask, [square], -1, 255, -1)
-                
-                # Extract the ROI using the mask
                 roi = cv2.bitwise_and(denoised_image, denoised_image, mask=mask)
-                
-                # Feature Extraction within the square
                 edges = detect_edges(roi)
                 _, _, line_features = detect_lines(edges)
-                
                 if line_features:
                     feature_list.extend(line_features)
                     label_list.extend([training_labels[idx]] * len(line_features))
-                else:
-                    # No lines detected; add a default feature
-                    feature_list.append([0, 0])  # Angle 0, length 0
-                    label_list.append(training_labels[idx])
         else:
-            # No squares detected, proceed with global pattern detection
             edges = detect_edges(denoised_image)
             _, _, line_features = detect_lines(edges)
             if line_features:
                 feature_list.extend(line_features)
                 label_list.extend([training_labels[idx]] * len(line_features))
-            else:
-                # No lines detected; add a default feature
-                feature_list.append([0, 0])  # Angle 0, length 0
-                label_list.append(training_labels[idx])
-    
-    # Convert to numpy arrays
+
     feature_array = np.array(feature_list)
     label_array = np.array(label_list)
-    
-    # Check unique classes in labels
-    unique_classes = np.unique(label_array)
-    print("Unique classes in training labels:", unique_classes)
-    if len(unique_classes) < 2:
-        raise ValueError(f"The number of classes has to be greater than one; got {len(unique_classes)} class.")
-    
-    # Use angle as the feature for SVM
-    X_train = feature_array[:, 0].reshape(-1, 1)  # Angle
+    X_train = feature_array
     y_train = label_array
-    
-    # Train the SVM classifier
-    svm_model = SVC(kernel='linear')
-    svm_model.fit(X_train, y_train)
-    
-    return svm_model
 
-# Batch Processing and Classification Metrics using Cross-Validation
+    # SVM pipeline with scaling
+    svm_pipeline = make_pipeline(StandardScaler(), SVC(kernel='linear'))
+    svm_pipeline.fit(X_train, y_train)
+    return svm_pipeline
+
+
 def cross_validate_model(image_paths, ground_truth_labels, n_splits=2):
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
     all_predictions = []
@@ -240,8 +215,18 @@ def cross_validate_model(image_paths, ground_truth_labels, n_splits=2):
         training_labels = [ground_truth_labels[i] for i in train_index]
         testing_labels = [ground_truth_labels[i] for i in test_index]
         
+        # Check unique classes in the current training fold
+        unique_classes = set(training_labels)
+        if len(unique_classes) < 2:
+            print(f"Skipping fold with insufficient class diversity: {unique_classes}")
+            continue
+        
         # Train the SVM classifier
-        svm_model = train_svm_classifier(training_image_paths, training_labels)
+        try:
+            svm_model = train_svm_with_scaling(training_image_paths, training_labels)
+        except ValueError as e:
+            print(f"Error during training in this fold: {e}")
+            continue
         
         # Test the classifier
         predictions = []
@@ -256,16 +241,20 @@ def cross_validate_model(image_paths, ground_truth_labels, n_splits=2):
         all_true_labels.extend(testing_labels)
     
     # Calculate and print classification metrics
-    accuracy = accuracy_score(all_true_labels, all_predictions)
-    precision = precision_score(all_true_labels, all_predictions, zero_division=0)
-    recall = recall_score(all_true_labels, all_predictions, zero_division=0)
-    f1 = f1_score(all_true_labels, all_predictions, zero_division=0)
-    
-    print("\nCross-Validation Classification Metrics:")
-    print(f"Accuracy: {accuracy:.2f}")
-    print(f"Precision: {precision:.2f}")
-    print(f"Recall: {recall:.2f}")
-    print(f"F1 Score: {f1:.2f}")
+    if all_predictions:
+        accuracy = accuracy_score(all_true_labels, all_predictions)
+        precision = precision_score(all_true_labels, all_predictions, zero_division=0)
+        recall = recall_score(all_true_labels, all_predictions, zero_division=0)
+        f1 = f1_score(all_true_labels, all_predictions, zero_division=0)
+        
+        print("\nCross-Validation Classification Metrics:")
+        print(f"Accuracy: {accuracy:.2f}")
+        print(f"Precision: {precision:.2f}")
+        print(f"Recall: {recall:.2f}")
+        print(f"F1 Score: {f1:.2f}")
+    else:
+        print("No valid folds were processed.")
+
 
 # Example usage with specified image paths
 if __name__ == "__main__":
