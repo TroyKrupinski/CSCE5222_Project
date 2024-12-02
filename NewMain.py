@@ -199,13 +199,167 @@ def visualize_detections(image_path, debug=False):
     
     return squares
 
+def calculate_detection_accuracy(detected_squares, ground_truth_squares, iou_threshold=0.5):
+    """
+    Calculate detection accuracy metrics comparing detected squares against ground truth
+    
+    Args:
+        detected_squares: List of detected square dictionaries with 'bbox' key
+        ground_truth_squares: List of ground truth (x,y,w,h) tuples
+        iou_threshold: Minimum IoU to consider a detection as correct
+    
+    Returns:
+        Dictionary containing precision, recall, and F1 score
+    """
+    true_positives = 0
+    false_positives = 0
+    false_negatives = 0
+    
+    # Track which ground truth squares have been matched
+    matched_gt = set()
+    
+    # For each detection, find best matching ground truth
+    for det in detected_squares:
+        best_iou = 0
+        best_gt_idx = None
+        
+        for i, gt in enumerate(ground_truth_squares):
+            if i in matched_gt:
+                continue
+                
+            iou = calculate_iou(det['bbox'], gt)
+            if iou > best_iou:
+                best_iou = iou
+                best_gt_idx = i
+        
+        # Check if detection matches any ground truth
+        if best_iou >= iou_threshold:
+            true_positives += 1
+            matched_gt.add(best_gt_idx)
+        else:
+            false_positives += 1
+    
+    # Count unmatched ground truth as false negatives
+    false_negatives = len(ground_truth_squares) - len(matched_gt)
+    
+    # Calculate metrics
+    precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
+    recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    
+    return {
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'true_positives': true_positives,
+        'false_positives': false_positives,
+        'false_negatives': false_negatives
+    }
+
+def visualize_detection_accuracy(image_path, ground_truth_squares, debug=False):
+    """
+    Visualize detection results with accuracy metrics
+    """
+    # Load and process image
+    original_image, preprocessed = load_and_preprocess_image(image_path)
+    
+    # Detect squares
+    detected_squares = detect_squares(preprocessed)
+    
+    # Calculate accuracy
+    accuracy_metrics = calculate_detection_accuracy(detected_squares, ground_truth_squares)
+    
+    # Create visualization
+    result_image = original_image.copy()
+    
+    # Draw detected squares in green
+    for square in detected_squares:
+        cv2.drawContours(result_image, [square['contour']], -1, (0, 255, 0), 2)
+    
+    # Draw ground truth squares in blue
+    for gt in ground_truth_squares:
+        x, y, w, h = gt
+        cv2.rectangle(result_image, (x, y), (x+w, y+h), (255, 0, 0), 2)
+    
+    # Create visualization
+    plt.figure(figsize=(15, 10))
+    
+    plt.subplot(221)
+    plt.imshow(cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB))
+    plt.title('Original Image')
+    plt.axis('off')
+    
+    plt.subplot(222)
+    plt.imshow(preprocessed, cmap='gray')
+    plt.title('Preprocessed Image')
+    plt.axis('off')
+    
+    plt.subplot(223)
+    plt.imshow(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB))
+    plt.title('Detection Results\nGreen: Detected, Blue: Ground Truth')
+    plt.axis('off')
+    
+    # Display metrics
+    metrics_text = [
+        f"Precision: {accuracy_metrics['precision']:.3f}",
+        f"Recall: {accuracy_metrics['recall']:.3f}",
+        f"F1 Score: {accuracy_metrics['f1']:.3f}",
+        f"True Positives: {accuracy_metrics['true_positives']}",
+        f"False Positives: {accuracy_metrics['false_positives']}",
+        f"False Negatives: {accuracy_metrics['false_negatives']}"
+    ]
+    
+    plt.subplot(224)
+    plt.text(0.1, 0.5, '\n'.join(metrics_text), fontsize=10)
+    plt.axis('off')
+    plt.title('Accuracy Metrics')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return detected_squares, accuracy_metrics
+
 def main():
-    image_path = "image/NakedTop01.jpg"  
+    image_path = "image/NakedTop01.jpg"
+    
+    # Define ground truth squares as (x, y, width, height)
+    # You'll need to manually annotate these or load from a dataset
+    ground_truth_squares = [
+        (396, 803, 88, 81),
+        (509, 799, 87, 86),
+        (606, 726, 91, 89),
+        (715, 718, 94, 85),
+        (499, 699, 90, 83),
+        (285, 688, 92, 86),
+        (390, 687, 84, 86),
+        (740, 617, 84, 85),
+        (626, 606, 89, 92),
+        (300, 586, 84, 87),
+        (515, 576, 92, 92),
+        (401, 575, 80, 88),
+        (650, 509, 84, 85),
+        (749, 496, 93, 88),
+        (416, 478, 94, 91),
+        (531, 473, 100, 93),
+        (320, 467, 80, 84),
+        (716, 384, 92, 89),
+        (606, 367, 90, 87),
+        (505, 365, 91, 93),
+        (397, 358, 89, 88),
+        (288, 357, 88, 88),
+        (738, 286, 86, 88),
+        (618, 262, 84, 83),
+        (404, 256, 95, 94),
+        (513, 255, 80, 81)
+    ]
+    
     
     try:
-        squares = visualize_detections(image_path, debug=True)
-        print(f"Detected {len(squares)} squares in the image")
-        
+        detected_squares, accuracy = visualize_detection_accuracy(image_path, ground_truth_squares)
+        print("\nAccuracy Metrics:")
+        for metric, value in accuracy.items():
+            print(f"{metric}: {value:.3f}")
+            
     except Exception as e:
         print(f"Error processing image: {str(e)}")
 

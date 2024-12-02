@@ -1,3 +1,7 @@
+(Will address the revisial of the figure of methodology in next update. Will properly format and address all of our results in next update.)
+
+- I am still also on seizure watch and cannot attend class - as I cannot walk far enough for alternative transportation - Troy Krupinski
+
 Preprocessing:
 
 Complete removal of CLAHE. Switched to histogram equalization.
