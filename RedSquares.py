@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
 def load_and_process_image(image_path):
     """Load and process image for red square detection"""
@@ -11,12 +12,10 @@ def load_and_process_image(image_path):
 
 def detect_red_squares(image, min_area=100, max_area=10000):
     """Detect red squares and return their coordinates"""
-    # Create a mask for red squares
-    lower_red = np.array([0, 0, 150])  # BGR values for red detection
+    lower_red = np.array([0, 0, 150])
     upper_red = np.array([100, 100, 255])
     red_mask = cv2.inRange(image, lower_red, upper_red)
     
-    # Find contours
     contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     squares = []
@@ -26,12 +25,10 @@ def detect_red_squares(image, min_area=100, max_area=10000):
             peri = cv2.arcLength(contour, True)
             approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
             
-            # Check if the shape is approximately square
-            if len(approx) >= 4:  # Allow for slight imperfections
+            if len(approx) >= 4:
                 x, y, w, h = cv2.boundingRect(contour)
                 aspect_ratio = float(w)/h
                 
-                # Check if it's square-like
                 if 0.7 < aspect_ratio < 1.3:
                     squares.append({
                         'bbox': (x, y, w, h),
@@ -40,26 +37,19 @@ def detect_red_squares(image, min_area=100, max_area=10000):
     
     return squares
 
-def visualize_detections(image_path):
+def visualize_detections(image_path, save_visualization=False):
     """Visualize and return the detected red squares"""
-    # Load image
     image = load_and_process_image(image_path)
-    
-    # Detect squares
     squares = detect_red_squares(image)
-    
-    # Create visualization
     result_image = image.copy()
     
-    # Draw detections and collect coordinates
     coordinates = []
     for i, square in enumerate(squares, 1):
         x, y, w, h = square['bbox']
-        coordinates.append(f"Square {i}: ({x}, {y}, {w}, {h})")
+        coordinates.append((x, y, w, h))
         cv2.rectangle(result_image, (x, y), (x+w, y+h), (0, 255, 0), 2)
         cv2.putText(result_image, str(i), (x, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
     
-    # Display results
     plt.figure(figsize=(15, 10))
     
     plt.subplot(121)
@@ -72,24 +62,64 @@ def visualize_detections(image_path):
     plt.title(f'Detected Red Squares (Total: {len(squares)})')
     plt.axis('off')
     
-    plt.tight_layout()
+    if save_visualization:
+        base_name = os.path.splitext(os.path.basename(image_path))[0]
+        plt.savefig(f'visualizations/{base_name}_detection.png')
+    
     plt.show()
     
-    # Print coordinates
-    print("\nDetected Square Coordinates (x, y, width, height):")
-    for coord in coordinates:
-        print(coord)
+    return coordinates
+
+def process_all_images():
+    """Process all images and generate ground truth data"""
+    # Use the correct base path and file extension
+    base_path = r"C:\Users\dunke\Desktop\CSCE5222_Project\Image\ground"
     
-    return squares
+    # Create visualizations directory if it doesn't exist
+    os.makedirs('visualizations', exist_ok=True)
+    
+    all_ground_truths = {}
+    
+    # Process each image
+    for i in range(1, 21):
+        image_name = f"NakedTop{i:02d}.png"  # Changed to .png
+        image_path = os.path.join(base_path, image_name)
+        
+        print(f"\nProcessing image: {image_name}")
+        
+        try:
+            coordinates = visualize_detections(image_path, save_visualization=True)
+            all_ground_truths[image_name] = coordinates
+            
+            # Print coordinates in a format ready for ground truth
+            print(f"\nGround truth for {image_name}:")
+            print("ground_truth_squares = [")
+            for x, y, w, h in coordinates:
+                print(f"    ({x}, {y}, {w}, {h}),")
+            print("]\n")
+            
+        except Exception as e:
+            print(f"Error processing {image_name}: {str(e)}")
+    
+    # Generate complete ground truth file
+    generate_ground_truth_file(all_ground_truths)
+
+def generate_ground_truth_file(all_ground_truths):
+    """Generate a Python file containing all ground truths"""
+    with open('ground_truths.py', 'w') as f:
+        f.write("# Ground truth coordinates for all images\n\n")
+        f.write("ground_truths = {\n")
+        
+        for image_name, coordinates in all_ground_truths.items():
+            f.write(f"    '{image_name}': [\n")
+            for x, y, w, h in coordinates:
+                f.write(f"        ({x}, {y}, {w}, {h}),\n")
+            f.write("    ],\n")
+        
+        f.write("}\n")
 
 def main():
-    # TODO: add rest of dataset
-    image_path = "image/NakedTop01.png"
-    
-    try:
-        squares = visualize_detections(image_path)
-    except Exception as e:
-        print(f"Error processing image: {str(e)}")
+    process_all_images()
 
 if __name__ == "__main__":
     main()
