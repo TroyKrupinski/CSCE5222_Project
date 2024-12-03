@@ -2,11 +2,9 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-
-
 def load_and_preprocess_image(image_path):
     """
-    Load and preprocess image with focus on clean square edges
+    Enhanced preprocessing to improve square detection
     """
     if isinstance(image_path, str):
         image = cv2.imread(image_path)
@@ -22,17 +20,18 @@ def load_and_preprocess_image(image_path):
     else:
         gray_image = image.copy()
     
-    # Enhance contrast
-    gray_image = cv2.equalizeHist(gray_image)
+    # Enhance contrast using CLAHE
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    enhanced = clahe.apply(gray_image)
     
     # Apply bilateral filter to reduce noise while preserving edges
-    denoised = cv2.bilateralFilter(gray_image, 9, 75, 75)
+    denoised = cv2.bilateralFilter(enhanced, 9, 75, 75)
     
     return image, denoised
 
-def detect_squares(image, min_area=150, max_area=10000, debug=False):
+def detect_squares(image, min_area=2000, max_area=25000, debug=False):
     """
-    Detect squares using binary thresholding and contour analysis
+    Square detection with focus on improved recall
     """
     if len(image.shape) == 3:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -42,36 +41,39 @@ def detect_squares(image, min_area=150, max_area=10000, debug=False):
     squares = []
     debug_images = []
     
-    # Try different threshold values
-    for thresh_val in [100, 127, 150, 175, 200]:  # Add more threshold values
-        # Binary threshold
-        _, binary = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
-        if debug:
-            debug_images.append((f"Threshold {thresh_val}", binary.copy()))
-        
-        # Find contours for both normal and inverted image
-        for img in [binary, cv2.bitwise_not(binary)]:
-            contours, _ = cv2.findContours(img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    # More threshold values for better detection
+    threshold_values = np.linspace(50, 200, 10).astype(np.int32)
+    
+    for thresh_val in threshold_values:
+        # Try both normal and inverted thresholds
+        for thresh_type in [cv2.THRESH_BINARY, cv2.THRESH_BINARY_INV]:
+            _, binary = cv2.threshold(gray, thresh_val, 255, thresh_type)
+            
+            # Light morphological operations
+            kernel = np.ones((2,2), np.uint8)
+            binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+            
+            contours, _ = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
             
             for contour in contours:
                 area = cv2.contourArea(contour)
                 if min_area < area < max_area:
                     peri = cv2.arcLength(contour, True)
-                    approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
+                    approx = cv2.approxPolyDP(contour, 0.08 * peri, True)  # More lenient approximation
                     
-                    # Check if the shape is approximately square
-                    if len(approx) == 4:
+                    if len(approx) in [4, 5]:  # Accept slightly imperfect squares
                         x, y, w, h = cv2.boundingRect(contour)
                         aspect_ratio = float(w)/h
                         
-                        # Check if it's square-like
-                        if 0.7 < aspect_ratio < 1.3:
-                            # Calculate the solidity (area / convex hull area)
+                        # More lenient aspect ratio
+                        if 0.6 < aspect_ratio < 1.4:
                             hull = cv2.convexHull(contour)
                             hull_area = cv2.contourArea(hull)
                             solidity = float(area) / hull_area if hull_area > 0 else 0
                             
-                            if solidity > 0.6:
+                            # More lenient solidity threshold
+                            if solidity > 0.5:
                                 squares.append({
                                     'contour': contour,
                                     'bbox': (x, y, w, h),
@@ -81,21 +83,23 @@ def detect_squares(image, min_area=150, max_area=10000, debug=False):
                                 })
     
     # Remove overlapping detections
-    filtered_squares = remove_overlapping_squares(squares)
+    filtered_squares = remove_overlapping_squares(squares, iou_threshold=0.4)
     
     if debug:
         return filtered_squares, debug_images
     return filtered_squares
 
-def remove_overlapping_squares(squares, iou_threshold=0.3):
+def remove_overlapping_squares(squares, iou_threshold=0.4):
     """
-    Remove overlapping square detections
+    Remove overlapping squares with more lenient threshold
     """
     if not squares:
         return []
     
-    # Sort squares by area
-    squares = sorted(squares, key=lambda x: x['area'], reverse=True)
+    # Sort squares by quality (solidity and aspect ratio)
+    squares = sorted(squares, 
+                    key=lambda x: (x['solidity'] * (1 - abs(1 - x['aspect_ratio']))),
+                    reverse=True)
     
     filtered_squares = []
     while squares:
@@ -113,7 +117,6 @@ def remove_overlapping_squares(squares, iou_threshold=0.3):
             filtered_squares.append(current)
     
     return filtered_squares
-
 def calculate_iou(box1, box2):
     """Calculate Intersection over Union"""
     x1 = max(box1[0], box2[0])
