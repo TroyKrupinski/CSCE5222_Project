@@ -484,8 +484,8 @@ def detect_squares_nn(
 def train_model(
     model: nn.Module,
     train_loader: DataLoader,
-    num_epochs: int = 50,
-    learning_rate: float = 0.001
+    num_epochs: int = 5,
+    learning_rate: float = 0.01
 ) -> nn.Module:
     """Train the square detection model"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -533,6 +533,76 @@ def train_model(
             # Could save best model here
     
     return model
+
+def calculate_iou(box1, box2):
+    """Calculate Intersection over Union"""
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[0] + box1[2], box2[0] + box2[2])
+    y2 = min(box1[1] + box1[3], box2[1] + box2[3])
+    
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    box1_area = box1[2] * box1[3]
+    box2_area = box2[2] * box2[3]
+    union = box1_area + box2_area - intersection
+    
+    return intersection / union if union > 0 else 0
+def calculate_detection_accuracy(detected_squares, ground_truth_squares, iou_threshold=0.5):
+    """
+    Calculate detection accuracy metrics comparing detected squares against ground truth
+    
+    Args:
+        detected_squares: List of detected square dictionaries with 'bbox' key
+        ground_truth_squares: List of ground truth (x,y,w,h) tuples
+        iou_threshold: Minimum IoU to consider a detection as correct
+    
+    Returns:
+        Dictionary containing precision, recall, and F1 score
+    """
+    true_positives = 0
+    false_positives = 0
+    false_negatives = 0
+    
+    # Track which ground truth squares have been matched
+    matched_gt = set()
+    
+    # For each detection, find best matching ground truth
+    for det in detected_squares:
+        best_iou = 0
+        best_gt_idx = None
+        
+        for i, gt in enumerate(ground_truth_squares):
+            if i in matched_gt:
+                continue
+                
+            iou = calculate_iou(det['bbox'], gt)
+            if iou > best_iou:
+                best_iou = iou
+                best_gt_idx = i
+        
+        # Check if detection matches any ground truth
+        if best_iou >= iou_threshold:
+            true_positives += 1
+            matched_gt.add(best_gt_idx)
+        else:
+            false_positives += 1
+    
+    # Count unmatched ground truth as false negatives
+    false_negatives = len(ground_truth_squares) - len(matched_gt)
+    
+    # Calculate metrics
+    precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
+    recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    
+    return {
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'true_positives': true_positives,
+        'false_positives': false_positives,
+        'false_negatives': false_negatives
+    }
 
 def main():
     # Create dataset
